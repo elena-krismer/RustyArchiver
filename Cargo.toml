@@ -1,0 +1,12 @@
+[package]
+name = "rustyarchiver"
+version = "0.1.0"
+edition = "2018"
+
+# Add dependencies here
+[dependencies]
+rayon = "1.5.3"
+sha2 = "0.9.8"
+md5 = "0.7.0"
+walkdir = "2.3.2"
+clap = { version = "4.0.32", features = ["derive"] }
