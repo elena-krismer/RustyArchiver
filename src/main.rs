@@ -92,7 +92,10 @@ fn compress_folder(folder: &Path, temp_dir: &Path) -> io::Result<PathBuf> {
         .status()?;
 
     if !status.success() {
+        log::error!("Failed to compress folder {:?}", folder);
         return Err(io::Error::new(io::ErrorKind::Other, "Failed to compress folder"));
+    } else {
+        log::info!("Compression of folder {:?} successful.", folder);
     }
     Ok(output_file)
 }
@@ -116,6 +119,7 @@ fn verify_compressed_folder(compressed_file: &Path, original_checksum_file: &Pat
         .arg("-C")
         .arg(&decompressed_dir)
         .status()?;
+
     if !status.success() {
         return Err(io::Error::new(io::ErrorKind::Other, "Failed to extract compressed folder"));
     }
@@ -133,9 +137,11 @@ fn verify_compressed_folder(compressed_file: &Path, original_checksum_file: &Pat
     fs::remove_dir_all(&decompressed_dir)?;
 
     if original_map == decompressed_map {
+        log::info!("Verification of compressed folder {:?} successful.", compressed_file);
         println!("Verification of compressed folder successful.");
         Ok(())
     } else {
+        log::error!("Checksum mismatch during verification of compressed folder {:?}.", compressed_file);
         Err(io::Error::new(io::ErrorKind::Other, "Checksum mismatch"))
     }
 }
@@ -145,8 +151,10 @@ fn verify_copy_to_archive(original_file: &Path, copied_file: &Path) -> io::Resul
     let original_md5 = calculate_md5(original_file)?;
     let copied_md5 = calculate_md5(copied_file)?;
     if original_md5 != copied_md5 {
+        log::error!("MD5 mismatch between original and copied file {:?}.", original_file);
         return Err(io::Error::new(io::ErrorKind::Other, "MD5 mismatch between original and copied file"));
-    }
+    } 
+    log::info!("Verification of copied file {:?} successful.", original_file);
     println!("Verification of copied file successful.");
     Ok(())
 }
@@ -183,6 +191,18 @@ fn parse_checksums(content: &str) -> io::Result<HashMap<String, String>> {
 }
 
 fn main() -> io::Result<()> {
+    let log_file = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open("RustyArchiver.log")
+        .unwrap();
+
+    simple_logger::SimpleLogger::new()
+        .with_level(log::LevelFilter::Info)
+        .with_writer(log_file)
+        .init()
+        .unwrap();
+
     let args = Cli::parse();
 
     let folder_to_archive = Path::new(&args.folder_to_archive);
@@ -218,6 +238,6 @@ fn main() -> io::Result<()> {
 
     //clean_up(temp_dir)?;
 
-    println!("Archiving completed successfully.");
+    log::info!("Archiving completed successfully. For: {:?}", folder_to_archive);
     Ok(())
 }
