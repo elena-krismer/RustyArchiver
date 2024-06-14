@@ -8,6 +8,9 @@ use md5::compute as md5_compute;
 use walkdir::WalkDir;
 use rayon::prelude::*;
 use clap::Parser;
+use std::fs::{OpenOptions};
+use std::thread;
+use std::sync::Arc;
 
 #[derive(Parser, Debug)]
 #[command(name = "RustyArchiver", version = "1.0", author = "Your Name <your.email@example.com>", about = "Archives folders with checksum verification")]
@@ -107,10 +110,8 @@ fn copy_file_to_archive(compressed_file: &Path, archive_dir: &Path) -> io::Resul
     Ok(())
 }
 
-// Function to verify the integrity of the compressed folder by checking checksums
-fn verify_compressed_folder(compressed_file: &Path, original_checksum_file: &Path, decompressed_checksum_file: &Path, temp_dir: &Path) -> io::Result<()> {
+fn decompress_folder(compressed_file: &Path, decompressed_checksum_file: &Path, temp_dir: &Path) -> io::Result<()>{
     let decompressed_dir = temp_dir.join("temp_verification");
-
     fs::create_dir_all(&decompressed_dir)?;
 
     let status = Command::new("tar")
@@ -126,8 +127,13 @@ fn verify_compressed_folder(compressed_file: &Path, original_checksum_file: &Pat
 
     generate_list_of_checksum(&decompressed_dir, decompressed_checksum_file)?;
 
+    Ok(())
+}
 
+// Function to verify the integrity of the compressed folder by checking checksums
+fn verify_compressed_folder(original_checksum_file: &Path, decompressed_checksum_file: &Path, temp_dir: &Path) -> io::Result<()> {
     // Read and parse the checksum files
+    let decompressed_dir = temp_dir.join("temp_verification");
     let original_checksums = fs::read_to_string(original_checksum_file)?;
     let decompressed_checksums = fs::read_to_string(decompressed_checksum_file)?;
 
@@ -137,11 +143,11 @@ fn verify_compressed_folder(compressed_file: &Path, original_checksum_file: &Pat
     fs::remove_dir_all(&decompressed_dir)?;
 
     if original_map == decompressed_map {
-        log::info!("Verification of compressed folder {:?} successful.", compressed_file);
+        log::info!("Verification of compressed folder {:?} successful.", decompressed_dir);
         println!("Verification of compressed folder successful.");
         Ok(())
     } else {
-        log::error!("Checksum mismatch during verification of compressed folder {:?}.", compressed_file);
+        log::error!("Checksum mismatch during verification of compressed folder {:?}.", decompressed_dir);
         Err(io::Error::new(io::ErrorKind::Other, "Checksum mismatch"))
     }
 }
@@ -192,52 +198,52 @@ fn parse_checksums(content: &str) -> io::Result<HashMap<String, String>> {
 
 fn main() -> io::Result<()> {
     let log_file = OpenOptions::new()
-        .append(true)
         .create(true)
-        .open("RustyArchiver.log")
-        .unwrap();
-
-    simple_logger::SimpleLogger::new()
-        .with_level(log::LevelFilter::Info)
-        .with_writer(log_file)
-        .init()
-        .unwrap();
+        .write(true)
+        .append(true)
+        .open("RustyArchiver.log")?;
 
     let args = Cli::parse();
 
-    let folder_to_archive = Path::new(&args.folder_to_archive);
-    let temp_dir = Path::new(&args.temp_dir);
-    let move_to_archive = args.move_to_archive;
+    let folder_to_archive = Arc::new(PathBuf::from(&args.folder_to_archive)); 
+    let temp_dir = Arc::new(PathBuf::from(&args.temp_dir));
+
     let cores = args.cores;
-
-    // Optional archive directory
-    let archive_dir = args.archive_dir.map(|dir| Path::new(&dir).to_path_buf());
-
-    // Initialize the rayon thread pool with the specified number of cores
     rayon::ThreadPoolBuilder::new().num_threads(cores).build_global().unwrap();
 
     // Define paths for the compressed file and checksum files
-    let folder_name = folder_to_archive.file_name().unwrap().to_str().unwrap();
-    let original_checksum_file_path = temp_dir.join(format!("{}_checksum.txt", folder_name));
-    let decompressed_checksum_file_path = temp_dir.join(format!("{}_checksum_decompressed.txt", folder_name));
+    let original_checksum_file_path = Arc::new(temp_dir.join(format!("{}_checksum.txt", folder_to_archive.file_name().unwrap().to_str().unwrap())));
+    let decompressed_checksum_file_path = temp_dir.join(format!("{}_checksum_decompressed.txt", folder_to_archive.file_name().unwrap().to_str().unwrap()));
 
-    prepare_archiving(folder_to_archive, &original_checksum_file_path)?;
-    let compressed_file_path = compress_folder(folder_to_archive, temp_dir)?;
-    verify_compressed_folder(&compressed_file_path, &original_checksum_file_path, &decompressed_checksum_file_path, temp_dir)?;
+    let archive_dir = args.archive_dir.map(|dir| PathBuf::from(dir));
+
+    // Start the preparation thread
+    let folder_to_archive_clone = Arc::clone(&folder_to_archive);
+    let original_checksum_file_path_clone = Arc::clone(&original_checksum_file_path);
+    let prepare_thread = thread::spawn(move || {
+        prepare_archiving(&folder_to_archive_clone, &original_checksum_file_path_clone)
+    });
+
+    let compressed_file_path = compress_folder(&folder_to_archive, &temp_dir)?;
+
+    decompress_folder(&compressed_file_path, &decompressed_checksum_file_path, &temp_dir)?;
+
+    // Ensure the preparation thread completes successfully
+    prepare_thread.join().unwrap()?;
+
+    verify_compressed_folder(&original_checksum_file_path, &decompressed_checksum_file_path, &temp_dir)?;
     let renamed_compressed_file_path = rename_folder(&compressed_file_path)?;
 
-    if move_to_archive {
-        if let Some(archive_dir) = &archive_dir {
+    if args.move_to_archive {
+        if let Some(ref archive_dir) = archive_dir {
             copy_file_to_archive(&renamed_compressed_file_path, archive_dir)?;
-            verify_copy_to_archive(&renamed_compressed_file_path, &archive_dir.join(renamed_compressed_file_path.file_name().unwrap()))?;
+            verify_copy_to_archive(&renamed_compressed_file_path, &Path::new(archive_dir).join(renamed_compressed_file_path.file_name().unwrap()))?;
         } else {
             eprintln!("Archive directory not specified.");
             std::process::exit(1);
         }
     }
 
-    //clean_up(temp_dir)?;
-
-    log::info!("Archiving completed successfully. For: {:?}", folder_to_archive);
+    log::info!("Archiving completed successfully.");
     Ok(())
 }
