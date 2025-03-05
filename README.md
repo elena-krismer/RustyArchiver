@@ -35,3 +35,6 @@ To install RustyArchiver, follow these steps:
 
 RustyArchiver is simple to use via the command line. Below are some examples of common tasks:
 
+```bash
+nohup cargo run -- --folder-to-archive ../../Astral/ --temp-dir ../astral_2403/  --cores 8
+```
